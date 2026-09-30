@@ -1,0 +1,158 @@
+# Reusable workflow: open-code-review з центральними правилами.
+# Викликається з кожного репозиторію 8-рядковим caller-ом (див. README).
+# Правила зливаються у порядку пріоритету: репозиторій > профіль групи > організація.
+name: AI review (open-code-review)
+
+on:
+  workflow_call:
+    inputs:
+      profile:
+        description: "Профіль групи репозиторіїв: rules/<profile>.rule.json. Порожньо = лише org-правила."
+        type: string
+        default: ""
+      model:
+        description: "Перекрити модель для цього репозиторію. Порожньо = LLM_MODEL з vars/secrets."
+        type: string
+        default: ""
+      max_tokens_budget:
+        description: "Жорстка стеля токенів на одне ревʼю. 0 = без ліміту."
+        type: string
+        default: "400000"
+      effort:
+        description: "low | medium | high = 1 / 2 / 3 раунди на групу файлів."
+        type: string
+        default: "low"
+      route_severity_below:
+        description: "Знахідки цієї severity і нижче йдуть у summary, не inline."
+        type: string
+        default: "medium"
+
+env:
+  CENTRAL_REPO: ${{ github.repository_owner }}/ai-review-central
+  OCR_VERSION: "1.12.9"
+
+jobs:
+  review:
+    # Усі PR-рівневі виключення тут, один раз для всіх репозиторіїв.
+    # github.event тут належить caller-у, тому умови працюють як у звичайному workflow.
+    if: >-
+      vars.AI_REVIEW_DISABLED != 'true'
+      && (
+        (
+          github.event_name == 'pull_request_target'
+          && github.event.pull_request.draft == false
+          && github.event.pull_request.user.type != 'Bot'
+          && !startsWith(github.event.pull_request.title, 'chore(deps)')
+          && !contains(github.event.pull_request.labels.*.name, 'skip-ai-review')
+          && github.event.pull_request.head.repo.fork == false
+        )
+        || (
+          github.event_name == 'issue_comment'
+          && github.event.issue.pull_request
+          && github.event.comment.user.type != 'Bot'
+          && (
+            github.event.comment.author_association == 'MEMBER'
+            || github.event.comment.author_association == 'OWNER'
+            || github.event.comment.author_association == 'COLLABORATOR'
+          )
+          && startsWith(github.event.comment.body, '/open-code-review')
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Resolve LLM settings
+        id: llm
+        env:
+          BASE: ${{ vars.LLM_OPENAI_BASE || secrets.LLM_OPENAI_BASE }}
+          MODEL: ${{ inputs.model || vars.LLM_MODEL || secrets.LLM_MODEL }}
+          KEY: ${{ secrets.LLM_API_KEY }}
+        run: |
+          ok=1
+          [ -n "$BASE" ]  || { echo "::error::LLM_OPENAI_BASE is empty (Variables or Secrets of the calling repo/org)"; ok=0; }
+          [ -n "$MODEL" ] || { echo "::error::LLM_MODEL is empty (Variables or Secrets, or pass inputs.model)"; ok=0; }
+          [ -n "$KEY" ]   || { echo "::error::LLM_API_KEY is empty (Secrets)"; ok=0; }
+          [ "$ok" = 1 ] || exit 1
+          echo "base length=${#BASE} model length=${#MODEL} key length=${#KEY}"
+          echo "base=$BASE"   >> "$GITHUB_OUTPUT"
+          echo "model=$MODEL" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve PR refs for comment trigger
+        id: pr
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner, repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            core.setOutput('base_ref', pr.base.ref);
+            core.setOutput('head_sha', pr.head.sha);
+            core.setOutput('pr_number', String(pr.number));
+
+      # Для pull_request_target і issue_comment github.sha вказує на base/default branch,
+      # тому локальний rule.json береться з довіреної гілки, а не з PR.
+      - name: Checkout calling repo (trusted base) for local rules
+        uses: actions/checkout@v4
+        with:
+          path: .caller
+          sparse-checkout: |
+            .opencodereview
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout central rules
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CENTRAL_REPO }}
+          path: .central
+          sparse-checkout: |
+            rules
+          sparse-checkout-cone-mode: false
+          token: ${{ secrets.CENTRAL_REPO_TOKEN || github.token }}
+
+      - name: Build effective rule set (repo > profile > org)
+        env:
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          ORG=.central/rules/org.rule.json
+          PROF=.central/rules/${PROFILE}.rule.json
+          REPO=.caller/.opencodereview/rule.json
+          EMPTY='{"include":[],"exclude":[],"rules":[]}'
+          [ -f "$ORG" ]  || { echo "::error::central rules/org.rule.json not found"; exit 1; }
+          if [ -n "$PROFILE" ] && [ ! -f "$PROF" ]; then echo "::error::profile '$PROFILE' not found in central rules/"; exit 1; fi
+          [ -f "$REPO" ] || { echo "no local .opencodereview/rule.json in calling repo, using central only"; REPO=/dev/null; }
+          [ -n "$PROFILE" ] || PROF=/dev/null
+          jq -s --arg empty "$EMPTY" '
+            map(. // ($empty | fromjson)) |
+            { include: (map(.include // []) | add | unique),
+              exclude: (map(.exclude // []) | add | unique),
+              rules:   (map(.rules   // []) | add) }
+          ' <(cat "$REPO" 2>/dev/null || echo "$EMPTY") <(cat "$PROF" 2>/dev/null || echo "$EMPTY") "$ORG" \
+            > /tmp/effective.rule.json
+          echo "effective rules: $(jq '.rules | length' /tmp/effective.rule.json) entries, $(jq '.exclude | length' /tmp/effective.rule.json) excludes, profile='${PROFILE:-none}'"
+          jq -r '.rules[] | "  \(.path)"' /tmp/effective.rule.json
+
+      - name: Run open-code-review
+        uses: alibaba/open-code-review@v1.12.9
+        env:
+          OCR_NO_UPDATE: "1"
+        with:
+          ocr_version: ${{ env.OCR_VERSION }}
+          github_token: ${{ github.token }}
+          llm_url: ${{ steps.llm.outputs.base }}
+          llm_auth_token: ${{ secrets.LLM_API_KEY }}
+          llm_protocol: openai
+          llm_use_anthropic: "false"
+          llm_model: ${{ steps.llm.outputs.model }}
+          llm_reasoning_effort: low
+          effort: ${{ inputs.effort }}
+          max_tokens_budget: ${{ inputs.max_tokens_budget }}
+          route_severity_below: ${{ inputs.route_severity_below }}
+          route_categories: style,documentation
+          sticky_summary: "true"
+          incremental: "true"
+          rule: /tmp/effective.rule.json
+          base_ref: ${{ steps.pr.outputs.base_ref }}
+          head_sha: ${{ steps.pr.outputs.head_sha }}
+          pr_number: ${{ steps.pr.outputs.pr_number }}

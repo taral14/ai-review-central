@@ -1,0 +1,19 @@
+{
+  "rules": [
+    {
+      "path": "**/*.{ts,tsx}",
+      "rule": "TypeScript strict mode, Node 22. ESLint owns style, do not comment on it. Focus on runtime bugs: un-awaited or unhandled promises, off-by-one loops, unsafe casts through any or unknown, swallowed errors, missing cleanup of subscriptions and timers, state updates after unmount.",
+      "merge_system_rule": false
+    },
+    {
+      "path": "**/*.{js,jsx,mjs,cjs}",
+      "rule": "Same as TypeScript: runtime bugs only, ESLint owns style.",
+      "merge_system_rule": false
+    },
+    {
+      "path": "**/package.json",
+      "rule": "Flag dependencies added with caret or wildcard ranges when the repository pins exact versions elsewhere, and scripts that download and execute remote content.",
+      "merge_system_rule": true
+    }
+  ]
+}

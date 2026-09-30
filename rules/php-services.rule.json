@@ -1,0 +1,14 @@
+{
+  "rules": [
+    {
+      "path": "**/*.{php,phtml}",
+      "rule": "PHP 8.3, PSR-12. Do not report anything PHPStan level 8, Psalm or PHP_CodeSniffer already enforce: types, unused code, style. Focus on SQL built by string concatenation, unvalidated input reaching queries or shell, null dereference on optional results, transaction boundaries, and exceptions swallowed without logging.",
+      "merge_system_rule": true
+    },
+    {
+      "path": "**/composer.json",
+      "rule": "Flag dependencies pinned to dev-master or wildcard versions, and abandoned packages if the diff shows them being added.",
+      "merge_system_rule": true
+    }
+  ]
+}

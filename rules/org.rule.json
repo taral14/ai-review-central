@@ -1,0 +1,28 @@
+{
+  "exclude": [
+    "**/*.lock", "**/package-lock.json", "**/composer.lock", "**/yarn.lock", "**/pnpm-lock.yaml",
+    "**/generated/**", "**/*.snap", "**/vendor/**", "**/dist/**", "**/build/**", "**/*.min.js", "**/*.map"
+  ],
+  "rules": [
+    {
+      "path": "**/database/migrations/**",
+      "rule": "Verify backward compatibility of every schema change with the currently deployed version. Flag destructive operations (drop column/table, type narrowing, renames) that have no rollback path or backfill. New NOT NULL columns must have a default or an explicit backfill step. Adding must happen before removing across releases.",
+      "merge_system_rule": true
+    },
+    {
+      "path": "**/.github/workflows/**",
+      "rule": "Flag use of pull_request_target together with checkout of the PR head, secrets exposed to forks, unpinned third-party actions (no SHA or exact version), and shell steps that interpolate PR-controlled values (title, body, branch) directly into run: instead of via env:.",
+      "merge_system_rule": true
+    },
+    {
+      "path": "**/*.{yml,yaml}",
+      "rule": "Only report issues with concrete runtime consequences: wrong indentation that changes structure, duplicated keys, secrets in plain text. Do not comment on formatting or key ordering.",
+      "merge_system_rule": true
+    },
+    {
+      "path": "**",
+      "rule": "Prefer precision over recall: report only issues you are confident are real and have a concrete consequence. Never comment on formatting, naming style or import ordering; linters and formatters own that. Do not report hardcoded credentials that are obvious placeholders (changeme, example, TODO).",
+      "merge_system_rule": true
+    }
+  ]
+}
